@@ -7,7 +7,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=Manrope:wght@400;600;700&display=swap&subset=cyrillic" rel="stylesheet">
-<script src="lib/jszip.min.js"></script>
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#2F5D7C">
 <meta name="mobile-web-app-capable" content="yes">
@@ -348,7 +347,7 @@ function decodeText(buf, base){
   return {title: base, paras: textToParas(txt)};
 }
 async function parseZip(buf, base){
-  if (!window.JSZip) throw new Error('Не загрузился модуль для архивов. Проверьте интернет и попробуйте снова.');
+  await ensureZip();
   const zip = await JSZip.loadAsync(buf);
   if (zip.file('META-INF/container.xml')) return parseEpub(buf, base, zip);
   const docx = zip.file('word/document.xml');
@@ -372,11 +371,21 @@ async function parseZip(buf, base){
   return readFile({name: inner.name, arrayBuffer: async () => ib}).then(r => { if (!r.title) r.title = iname; return r; });
 }
 function loadScript(src){
-  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Не загрузился модуль для PDF. Проверьте интернет.')); document.head.appendChild(s); });
+  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => { s.remove(); rej(); }; document.head.appendChild(s); });
 }
+// Ищем библиотеку: в папке lib, в корне сайта, затем в интернете
+async function loadLib(name, cdn, check){
+  if (check()) return '';
+  for (const base of ['lib/', '', cdn]){
+    try { await loadScript(base + name); if (check()) return base; } catch(e){}
+  }
+  throw new Error('Не удалось загрузить модуль ' + name + '. Проверьте интернет или что файл загружен на GitHub.');
+}
+const ensureZip = () => loadLib('jszip.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/', () => !!window.JSZip);
 async function parsePdf(buf, base){
-  if (!window.pdfjsLib) await loadScript('lib/pdf.min.js');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+  const libBase = await loadLib('pdf.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/', () => !!window.pdfjsLib);
+  if (window.__pdfBase === undefined) window.__pdfBase = libBase;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = window.__pdfBase + 'pdf.worker.min.js';
   const pdf = await pdfjsLib.getDocument({data: new Uint8Array(buf)}).promise;
   let title = base;
   try { const meta = await pdf.getMetadata(); if (meta.info && meta.info.Title && meta.info.Title.trim().length > 2) title = meta.info.Title.trim(); } catch(e){}
@@ -436,7 +445,7 @@ function resolvePath(p){
   return out.join('/');
 }
 async function parseEpub(buf, fallback, zip){
-  if (!zip){ if (!window.JSZip) throw new Error('Не загрузился модуль для EPUB.'); zip = await JSZip.loadAsync(buf); }
+  if (!zip){ await ensureZip(); zip = await JSZip.loadAsync(buf); }
   const cont = zip.file('META-INF/container.xml');
   if (!cont) throw new Error('Файл не похож на EPUB.');
   const cdoc = new DOMParser().parseFromString(await cont.async('string'), 'application/xml');
